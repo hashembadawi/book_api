@@ -9,6 +9,18 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+
+  if (!token) return res.status(401).json({ message: 'Access denied. Token missing.' });
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ message: 'Invalid token' });
+    req.user = user;
+    next();
+  });
+};
 
 // connect to mongo db
 mongoose.connect(process.env.MONGO_URI, { 
@@ -27,10 +39,64 @@ const bookSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// user schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
+});
+
 const Book = mongoose.model('Book', bookSchema);
+const User = mongoose.model('User', userSchema);
+
+const bcrypt = require('bcryptjs');
+//register url
+app.post('/api/auth/register', async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = new User({
+      username,
+      password: hashedPassword
+    });
+
+    await newUser.save();
+    res.status(201).json({ message: 'User registered successfully' });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({ message: 'Username already exists' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const jwt = require('jsonwebtoken');
+//Login Url
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const user = await User.findOne({ username });
+    if (!user) return res.status(400).json({ message: 'Invalid username or password' });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ message: 'Invalid username or password' });
+
+    const token = jwt.sign(
+      { userId: user._id, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    res.status(200).json({ token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 //Add book Url
-app.post('/api/books/add', async (req, res) => {
+app.post('/api/books/add', authenticateToken, async (req, res) => {
   try {
     const { name, author, price, imageUrl } = req.body;
     const newBook = new Book({
@@ -75,7 +141,7 @@ app.get('/api/books/:id', async (req, res) => {
 });
 
 // Update book by ID (PUT)
-app.put('/api/books/:id', async (req, res) => {
+app.put('/api/books/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, author, price } = req.body;
@@ -110,7 +176,7 @@ app.put('/api/books/:id', async (req, res) => {
 });
 
 // Delete book by ID
-app.delete('/api/books/:id', async (req, res) => {
+app.delete('/api/books/:id',authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     console.log(req.params)
